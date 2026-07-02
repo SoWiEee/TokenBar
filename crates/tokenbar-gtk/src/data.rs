@@ -1,13 +1,12 @@
-//! Bridge from the shared `tb_reports` core to renderable bars.
+//! Bridge from the shared `tb_reports` core to the GTK views.
 //!
 //! Calls `tb_reports::usage_graph::run` (the same contribution-graph payload the
-//! macOS app consumes) and lays each day out GitHub-style — week = column,
-//! weekday = row — reusing the pure `graph::grid_from` builder. Token totals are
-//! sqrt-compressed against the busiest day so a few heavy days don't flatten the
-//! rest.
+//! macOS app consumes) and extracts both the 3D bars (week × weekday) and the
+//! headline summary. Token totals are sqrt-compressed against the busiest day so
+//! a few heavy days don't flatten the rest.
 //!
 //! TODO(phase 2/3): this runs on the caller's thread (blocking; first call may
-//! fetch pricing). Move it onto a worker thread feeding the UI via a channel.
+//! fetch pricing). It is already driven from a worker thread in `main`.
 
 use std::collections::HashMap;
 
@@ -15,31 +14,60 @@ use chrono::{Datelike, Duration, NaiveDate};
 
 use crate::graph::{self, Bar};
 
-/// Real usage bars, falling back to the demo grid when there is no local data or
-/// the core call fails (so the window is never blank during development).
-pub fn load_bars() -> Vec<Bar> {
+/// Headline totals for the Overview lens.
+#[derive(Debug, Clone, Default)]
+pub struct GraphSummary {
+    pub total_tokens: i64,
+    pub total_cost: f64,
+    pub active_days: i64,
+    pub total_days: i64,
+}
+
+/// Everything the views need from one usage-graph load.
+pub struct GraphData {
+    pub bars: Vec<Bar>,
+    pub summary: GraphSummary,
+}
+
+/// Load usage from the shared core. Falls back to the demo grid + empty summary
+/// when there is no local data or the core call fails, so the UI is never blank.
+pub fn load() -> GraphData {
     match tb_reports::usage_graph::run("") {
-        Ok(payload) => match bars_from_payload(&payload) {
-            Some(bars) => bars,
-            None => {
+        Ok(payload) => {
+            let bars = bars_from_payload(&payload).unwrap_or_else(|| {
                 eprintln!("usage graph had no contributions; using demo grid");
                 graph::demo_grid(53, 7)
-            }
-        },
+            });
+            let summary = summary_from_payload(&payload);
+            GraphData { bars, summary }
+        }
         Err(e) => {
             eprintln!("usage_graph::run failed: {e}; using demo grid");
-            graph::demo_grid(53, 7)
+            GraphData {
+                bars: graph::demo_grid(53, 7),
+                summary: GraphSummary::default(),
+            }
         }
     }
 }
 
-/// Map the `contributions` array of the usage-graph payload into a full
-/// weeks × 7 grid (missing days become empty cells). Returns None when the
-/// payload has no usable contributions.
+fn summary_from_payload(payload: &serde_json::Value) -> GraphSummary {
+    let s = payload.get("summary");
+    let field_i64 = |k: &str| s.and_then(|s| s.get(k)).and_then(|v| v.as_i64()).unwrap_or(0);
+    let field_f64 = |k: &str| s.and_then(|s| s.get(k)).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    GraphSummary {
+        total_tokens: field_i64("totalTokens"),
+        total_cost: field_f64("totalCost"),
+        active_days: field_i64("activeDays"),
+        total_days: field_i64("totalDays"),
+    }
+}
+
+/// Map the `contributions` array into a full weeks × 7 grid (missing days become
+/// empty cells). Returns None when there are no usable contributions.
 fn bars_from_payload(payload: &serde_json::Value) -> Option<Vec<Bar>> {
     let contributions = payload.get("contributions")?.as_array()?;
 
-    // (date, token total) for every day that parsed.
     let mut days: Vec<(NaiveDate, f64)> = Vec::with_capacity(contributions.len());
     for c in contributions {
         let Some(date) = c
@@ -76,7 +104,6 @@ fn bars_from_payload(payload: &serde_json::Value) -> Option<Vec<Bar>> {
         let col = (offset / 7) as usize;
         let row = date.weekday().num_days_from_sunday() as usize;
         max_col = max_col.max(col);
-        // sqrt compresses the heavy-tailed token distribution into [0, 1].
         let v = ((*tokens / max_tokens) as f32).sqrt();
         intensity.insert((col, row), v);
     }
