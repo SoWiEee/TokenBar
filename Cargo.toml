@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/tb_core_ffi", "crates/tb_reports", "vendor/tokscale-core"]
+members = ["crates/tb_core_ffi", "crates/tb_reports", "crates/tokenbar-gtk", "vendor/tokscale-core"]
 
 [profile.release]
 lto = true
