@@ -1,28 +1,32 @@
 //! TokenBar — Linux (GTK4) frontend.
 //!
-//! Phase 1: prove the GLArea → epoxy → glow rendering chain on this machine by
-//! drawing a triangle in a libadwaita window. The orbitable 3D contribution
-//! graph (backed by the shared `tb_reports` core) replaces the triangle once
-//! the chain is confirmed.
+//! Phase 1: an orbitable 3D contribution graph in a libadwaita window, rendered
+//! with glow in a GTK GLArea. Shares the Rust core with the macOS app via the
+//! `tb_reports` crate (real data wired in next; demo data for now).
 
+mod camera;
 mod graph;
 mod renderer;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ptr;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use adw::{Application, ApplicationWindow};
-use gtk4::{gdk, glib, GLArea};
+use gtk4::{gdk, glib, EventControllerScroll, EventControllerScrollFlags, GLArea, GestureDrag};
 
+use camera::Orbit;
 use renderer::Renderer;
 
 const APP_ID: &str = "com.nyanako.tokenbar.gtk";
+/// Drag/scroll sensitivity.
+const ORBIT_SENSITIVITY: f32 = 0.008;
+const ZOOM_STEP: f32 = 0.1;
 
 fn main() -> glib::ExitCode {
-    // Load GL function pointers through epoxy (GTK's GL dispatch library) so
-    // glow can resolve them via `epoxy::get_proc_addr` at realize time.
+    // Load GL function pointers through epoxy so glow can resolve them at
+    // realize time via `epoxy::get_proc_addr`.
     {
         #[cfg(all(unix, not(target_os = "macos")))]
         let library = unsafe { libloading::os::unix::Library::new("libepoxy.so.0") }
@@ -40,28 +44,33 @@ fn main() -> glib::ExitCode {
 }
 
 fn build_ui(app: &Application) {
+    // A GitHub-style year: 53 weeks × 7 days. Demo data until tb_reports is wired.
+    let bars = Rc::new(graph::demo_grid(53, 7));
+    let extent = bars.iter().map(|b| b.x.abs()).fold(1.0_f32, f32::max);
+    let cam = Rc::new(RefCell::new(Orbit::framing(extent)));
+
     let gl_area = GLArea::new();
-    // Force desktop GL (not GLES) so the `#version 330 core` shaders compile,
-    // and request a depth buffer now for the 3D graph that follows.
+    // Force desktop GL (not GLES) for the `#version 330 core` shaders; request a
+    // depth buffer for the 3D scene.
     gl_area.set_allowed_apis(gdk::GLAPI::GL);
     gl_area.set_has_depth_buffer(true);
 
-    // GL resources live on the GLArea's context: created in realize, dropped in
-    // unrealize. Shared with the render callback via Rc<RefCell<…>>.
+    // GL resources live on the GLArea context: built in realize, dropped in
+    // unrealize; shared with the render callback via Rc<RefCell<…>>.
     let state: Rc<RefCell<Option<Renderer>>> = Rc::new(RefCell::new(None));
 
     gl_area.connect_realize({
         let state = state.clone();
+        let bars = bars.clone();
         move |area| {
             area.make_current();
             if let Some(err) = area.error() {
                 eprintln!("GLArea realize error: {err}");
                 return;
             }
-            let gl =
-                unsafe { glow::Context::from_loader_function(|s| epoxy::get_proc_addr(s) as *const _) };
-            // A GitHub-style year: 53 weeks × 7 days. Demo data for now.
-            let bars = graph::demo_grid(53, 7);
+            let gl = unsafe {
+                glow::Context::from_loader_function(|s| epoxy::get_proc_addr(s) as *const _)
+            };
             match Renderer::new(gl, &bars) {
                 Ok(r) => *state.borrow_mut() = Some(r),
                 Err(e) => eprintln!("renderer init failed: {e}"),
@@ -71,11 +80,12 @@ fn build_ui(app: &Application) {
 
     gl_area.connect_render({
         let state = state.clone();
+        let cam = cam.clone();
         move |area, _ctx| {
             if let Some(renderer) = state.borrow().as_ref() {
-                let w = area.width().max(1) as f32;
-                let h = area.height().max(1) as f32;
-                renderer.draw(w / h);
+                let aspect = area.width().max(1) as f32 / area.height().max(1) as f32;
+                let vp = cam.borrow().view_proj(aspect);
+                renderer.draw(&vp);
             }
             glib::Propagation::Stop
         }
@@ -89,12 +99,55 @@ fn build_ui(app: &Application) {
         }
     });
 
+    wire_orbit_gestures(&gl_area, &cam);
+
     let window = ApplicationWindow::builder()
         .application(app)
-        .default_width(720)
-        .default_height(520)
+        .default_width(820)
+        .default_height(600)
         .title("TokenBar")
         .content(&gl_area)
         .build();
     window.present();
+}
+
+/// Drag to orbit (azimuth/elevation), scroll to zoom. Absolute-from-start drag
+/// avoids drift: the orientation at drag-begin plus the gesture offset.
+fn wire_orbit_gestures(gl_area: &GLArea, cam: &Rc<RefCell<Orbit>>) {
+    let drag = GestureDrag::new();
+    let start = Rc::new(Cell::new((0.0_f32, 0.0_f32)));
+    drag.connect_drag_begin({
+        let cam = cam.clone();
+        let start = start.clone();
+        move |_, _, _| {
+            let c = cam.borrow();
+            start.set((c.azimuth, c.elevation));
+        }
+    });
+    drag.connect_drag_update({
+        let cam = cam.clone();
+        let area = gl_area.clone();
+        let start = start.clone();
+        move |_, offset_x, offset_y| {
+            let (az0, ele0) = start.get();
+            cam.borrow_mut().set_orbit(
+                az0 - offset_x as f32 * ORBIT_SENSITIVITY,
+                ele0 + offset_y as f32 * ORBIT_SENSITIVITY,
+            );
+            area.queue_render();
+        }
+    });
+    gl_area.add_controller(drag);
+
+    let scroll = EventControllerScroll::new(EventControllerScrollFlags::VERTICAL);
+    scroll.connect_scroll({
+        let cam = cam.clone();
+        let area = gl_area.clone();
+        move |_, _, dy| {
+            cam.borrow_mut().zoom(1.0 + dy as f32 * ZOOM_STEP);
+            area.queue_render();
+            glib::Propagation::Stop
+        }
+    });
+    gl_area.add_controller(scroll);
 }

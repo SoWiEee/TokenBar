@@ -5,7 +5,7 @@
 //! the grid width looks down the depth axis. Orbit controls and real
 //! `tb_reports` data come next.
 
-use glam::{vec3, Mat4, Vec3};
+use glam::Mat4;
 use glow::HasContext;
 
 use crate::graph::Bar;
@@ -19,8 +19,6 @@ pub struct Renderer {
     u_vp: glow::UniformLocation,
     vertex_count: i32,
     instance_count: i32,
-    /// Half-width of the grid on x — drives camera framing.
-    extent: f32,
 }
 
 const VERT_SRC: &str = r#"#version 330 core
@@ -125,7 +123,6 @@ impl Renderer {
 
             gl.bind_vertex_array(None);
 
-            let extent = bars.iter().fold(1.0_f32, |m, b| m.max(b.x.abs()));
             Ok(Self {
                 gl,
                 program,
@@ -135,19 +132,13 @@ impl Renderer {
                 u_vp,
                 vertex_count,
                 instance_count: bars.len() as i32,
-                extent,
             })
         }
     }
 
-    /// Draw all bars. `aspect` = viewport width / height.
-    pub fn draw(&self, aspect: f32) {
+    /// Draw all bars with the given view-projection matrix (from the camera).
+    pub fn draw(&self, vp: &Mat4) {
         let gl = &self.gl;
-        let r = self.extent;
-        let proj = Mat4::perspective_rh_gl(45f32.to_radians(), aspect.max(0.01), 0.1, r * 6.0);
-        let eye = vec3(0.0, r * 0.62, r * 1.18);
-        let view = Mat4::look_at_rh(eye, vec3(0.0, 0.6, 0.0), Vec3::Y);
-        let vp = proj * view;
         unsafe {
             gl.enable(glow::DEPTH_TEST);
             gl.clear_color(0.05, 0.05, 0.07, 1.0);
