@@ -124,6 +124,30 @@ pub fn load_hourly() -> Option<Value> {
     })
 }
 
+/// OAuth subscription-quota payload for the Overview cards. Network-bound (fetches
+/// each provider's quota), so it is NOT tied to log mtime: fetched fresh each
+/// time, except that TOKENBAR_CACHE_STALE_OK serves the last result for fast
+/// iteration. Best-effort; per-provider failures live in each snapshot's `error`.
+pub fn load_quota() -> Option<Value> {
+    let started = Instant::now();
+    if std::env::var_os("TOKENBAR_CACHE_STALE_OK").is_some() {
+        if let Some(payload) = read_cache_any("quota-cache.json") {
+            eprintln!("quota cache (stale-ok) in {:?}", started.elapsed());
+            return Some(payload);
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .ok()?;
+    let payload = runtime.block_on(tb_reports::agent_usage::run());
+    let value = serde_json::to_value(payload).ok()?;
+    eprintln!("quota fetched in {:?}", started.elapsed());
+    write_cache("quota-cache.json", 0, &value);
+    Some(value)
+}
+
 /// Headline totals for the Overview lens.
 #[derive(Debug, Clone, Default)]
 pub struct GraphSummary {

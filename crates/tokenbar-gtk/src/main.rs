@@ -87,7 +87,7 @@ fn build_ui(
     tray: Rc<Option<tray::TrayHandle>>,
 ) {
     let graph_view = Rc::new(GraphView::new());
-    let overview = Rc::new(Overview::new());
+    let overview = Overview::new();
     let daily = daily::new();
     let hourly = hourly::HourlyView::new();
     let stats = stats::StatsView::new();
@@ -107,12 +107,14 @@ fn build_ui(
 
     // Lazily load report-backed lenses the first time they're shown.
     stack.connect_visible_child_name_notify({
+        let overview = overview.clone();
         let daily = daily.clone();
         let hourly = hourly.clone();
         let stats = stats.clone();
         let models = models.clone();
         let agents = agents.clone();
         move |stack| match stack.visible_child_name().as_deref() {
+            Some("overview") => overview.ensure_quota_loaded(),
             Some("daily") => daily.ensure_loaded(),
             Some("hourly") => hourly.ensure_loaded(),
             Some("stats") => stats.ensure_loaded(),
