@@ -181,7 +181,13 @@ pub struct TokenBreakdown {
 
 impl TokenBreakdown {
     pub fn total(&self) -> i64 {
-        self.input + self.output + self.cache_read + self.cache_write + self.reasoning
+        // saturating so clamped (i64::MAX) buckets from a corrupt source can't
+        // overflow the sum.
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
+            .saturating_add(self.reasoning)
     }
 }
 
@@ -1156,9 +1162,16 @@ fn parse_all_messages_with_pricing_with_env_strategy(
         .get(ClientId::RooCode)
         .par_iter()
         .map(|path| {
-            load_or_parse_source(path, &source_cache, pricing, |path| {
-                sessions::roocode::parse_roocode_file(path)
-            })
+            // from_roo_path folds the sibling api_conversation_history.json into
+            // the fingerprint (parse_roo_kilo_file reads model/agent from it), so
+            // a history-only rewrite invalidates the cache (#741).
+            load_or_parse_source_with_fingerprint(
+                path,
+                &source_cache,
+                pricing,
+                message_cache::SourceFingerprint::from_roo_path,
+                sessions::roocode::parse_roocode_file,
+            )
         })
         .collect();
     for outcome in roocode_outcomes {
@@ -1172,9 +1185,13 @@ fn parse_all_messages_with_pricing_with_env_strategy(
         .get(ClientId::KiloCode)
         .par_iter()
         .map(|path| {
-            load_or_parse_source(path, &source_cache, pricing, |path| {
-                sessions::kilocode::parse_kilocode_file(path)
-            })
+            load_or_parse_source_with_fingerprint(
+                path,
+                &source_cache,
+                pricing,
+                message_cache::SourceFingerprint::from_roo_path,
+                sessions::kilocode::parse_kilocode_file,
+            )
         })
         .collect();
     for outcome in kilocode_outcomes {
@@ -1188,9 +1205,13 @@ fn parse_all_messages_with_pricing_with_env_strategy(
         .get(ClientId::Cline)
         .par_iter()
         .map(|path| {
-            load_or_parse_source(path, &source_cache, pricing, |path| {
-                sessions::cline::parse_cline_file(path)
-            })
+            load_or_parse_source_with_fingerprint(
+                path,
+                &source_cache,
+                pricing,
+                message_cache::SourceFingerprint::from_roo_path,
+                sessions::cline::parse_cline_file,
+            )
         })
         .collect();
     for outcome in cline_outcomes {
@@ -1226,12 +1247,18 @@ fn parse_all_messages_with_pricing_with_env_strategy(
         }
     }
 
-    // micode: WAL-mode SQLite, cached via from_sqlite_path (-wal-aware).
+    // micode: WAL-mode SQLite, cached via from_sqlite_path (-wal-aware). Pass
+    // pricing: None so the loader returns the raw embedded cost, then reprice
+    // below only when it's absent (cost-guarded, #742 Part 2 — mirrors the
+    // streaming lane and gjc so MiMo Code's authoritative cost is never
+    // overwritten by a recomputed tokens*rate). This materialized path is dead
+    // code today (public API only), guarded here for parity with the streaming
+    // lane.
     let micode_outcomes: Vec<CachedParseOutcome> = scan_result
         .get(ClientId::MiMoCode)
         .par_iter()
         .map(|path| {
-            load_or_parse_sqlite_source(path, &source_cache, pricing, |path| {
+            load_or_parse_sqlite_source(path, &source_cache, None, |path| {
                 sessions::micode::parse_micode_sqlite(path)
             })
         })
@@ -1242,6 +1269,12 @@ fn parse_all_messages_with_pricing_with_env_strategy(
             outcome
                 .messages
                 .into_iter()
+                .map(|mut m| {
+                    if m.cost <= 0.0 {
+                        apply_pricing_if_available(&mut m, pricing);
+                    }
+                    m
+                })
                 .filter(|message| should_keep_deduped_message(&mut micode_seen, message)),
         );
         if let Some(entry) = outcome.cache_entry {
@@ -1611,11 +1644,13 @@ fn aggregate_model_usage_entries(
     let mut entries: Vec<ModelUsage> = model_map
         .into_values()
         .map(|mut entry| {
-            let total_tokens = entry.input.max(0)
-                + entry.output.max(0)
-                + entry.cache_read.max(0)
-                + entry.cache_write.max(0)
-                + entry.reasoning.max(0);
+            let total_tokens = entry
+                .input
+                .max(0)
+                .saturating_add(entry.output.max(0))
+                .saturating_add(entry.cache_read.max(0))
+                .saturating_add(entry.cache_write.max(0))
+                .saturating_add(entry.reasoning.max(0));
             entry.performance.finalize(total_tokens);
             let mut providers: Vec<&str> = entry.provider.split(", ").collect();
             providers.sort_unstable();
@@ -1638,11 +1673,14 @@ fn aggregate_model_usage_entries(
 }
 
 fn positive_token_total(tokens: &TokenBreakdown) -> i64 {
-    tokens.input.max(0)
-        + tokens.output.max(0)
-        + tokens.cache_read.max(0)
-        + tokens.cache_write.max(0)
-        + tokens.reasoning.max(0)
+    // saturating so multiple clamped (i64::MAX) buckets can't overflow the sum.
+    tokens
+        .input
+        .max(0)
+        .saturating_add(tokens.output.max(0))
+        .saturating_add(tokens.cache_read.max(0))
+        .saturating_add(tokens.cache_write.max(0))
+        .saturating_add(tokens.reasoning.max(0))
 }
 
 /// Returns the effective client list for a report: uses the caller-supplied
@@ -1828,6 +1866,14 @@ impl AgentAccumulator {
 /// streaming migration.
 fn agent_bucket_key(msg: &UnifiedMessage) -> String {
     match msg.agent.as_deref() {
+        // Copilot emits raw OTEL agent ids (e.g. "github.copilot.default",
+        // "Plugin:team:slug") via #724; upstream prettifies them in its CLI TUI
+        // (which we do not vendor), so apply the copilot-specific normalization
+        // here on our streaming agents-report path. Every other client keeps the
+        // generic normalization (opencode already normalizes at parse time).
+        Some(raw) if !raw.trim().is_empty() && msg.client == "copilot" => {
+            sessions::normalize_copilot_agent_name(raw)
+        }
         Some(raw) if !raw.trim().is_empty() => sessions::normalize_agent_name(raw),
         _ => "Main".to_string(),
     }
@@ -1908,9 +1954,22 @@ pub async fn get_agents_report(options: ReportOptions) -> Result<AgentReport, St
     // Cost desc, then total-tokens desc — matches the old FFI agents report
     // ordering. This token-total formula MUST stay identical to the `total`
     // computed in the FFI mapper (crates/tb_core_ffi/src/agents_report.rs).
+    // saturating_add so #766's i64::MAX-clamped buckets from a corrupt
+    // Antigravity DB can't overflow the sort key (matches the model report's
+    // saturating total; for normal >=0 tokens the result is unchanged).
     entries.sort_by(|a, b| {
-        let a_total = a.input + a.output + a.cache_read + a.cache_write + a.reasoning;
-        let b_total = b.input + b.output + b.cache_read + b.cache_write + b.reasoning;
+        let a_total = a
+            .input
+            .saturating_add(a.output)
+            .saturating_add(a.cache_read)
+            .saturating_add(a.cache_write)
+            .saturating_add(a.reasoning);
+        let b_total = b
+            .input
+            .saturating_add(b.output)
+            .saturating_add(b.cache_read)
+            .saturating_add(b.cache_write)
+            .saturating_add(b.reasoning);
         b.cost
             .partial_cmp(&a.cost)
             .unwrap_or(std::cmp::Ordering::Equal)
@@ -2198,7 +2257,16 @@ where
         // Custom fingerprint fn — for sources whose cache validity depends on a
         // sibling file (e.g. jcode's `.journal.jsonl`), so a sibling-only write
         // still invalidates the cache instead of serving stale data.
-        ($client_id:expr, $parse_fn:expr, $fingerprint_fn:expr) => {{
+        ($client_id:expr, $parse_fn:expr, $fingerprint_fn:expr) => {
+            simple_lane!($client_id, $parse_fn, $fingerprint_fn, false)
+        };
+        // 4-arg (cost-guarded reprice): clients that embed an authoritative
+        // per-message cost (e.g. MiMo Code — #742 Part 2) pass `true`, so a
+        // recomputed tokens*rate never clobbers the embedded cost; only a
+        // missing cost (`<= 0.0`) is repriced. The cache still stores raw
+        // (unpriced) messages, so the guard is applied on emit here — exactly
+        // like the default unconditional path (which passes `false`).
+        ($client_id:expr, $parse_fn:expr, $fingerprint_fn:expr, $guard_cost:expr) => {{
             // Per-lane dedup set: persists across this client's files, never
             // shared with other clients (see the note above the trae buffer).
             let mut seen_keys: HashSet<String> = HashSet::new();
@@ -2213,7 +2281,7 @@ where
                     for msg in cached.messages.iter() {
                         let mut m = msg.clone();
                         m.refresh_derived_fields();
-                        apply_pricing_if_available(&mut m, pricing);
+                        reprice_lane_message(&mut m, pricing, $guard_cost);
                         if !passes_client(&m) { continue; }
                         let keep = m.dedup_key.as_ref().is_none_or(|k| k.is_empty() || dedup_gate_passes(k, &mut seen_keys));
                         if keep && filter(&m) { sink(&m); }
@@ -2237,7 +2305,7 @@ where
                     }
                 }
                 for mut m in msgs {
-                    apply_pricing_if_available(&mut m, pricing);
+                    reprice_lane_message(&mut m, pricing, $guard_cost);
                     if !passes_client(&m) { continue; }
                     let keep = m.dedup_key.as_ref().is_none_or(|k| k.is_empty() || dedup_gate_passes(k, &mut seen_keys));
                     if keep && filter(&m) { sink(&m); }
@@ -2255,25 +2323,44 @@ where
     simple_lane!(ClientId::Pi,        sessions::pi::parse_pi_file);
     simple_lane!(ClientId::Kimi,      sessions::kimi::parse_kimi_file);
     simple_lane!(ClientId::Qwen,      sessions::qwen::parse_qwen_file);
-    simple_lane!(ClientId::RooCode,   sessions::roocode::parse_roocode_file);
-    simple_lane!(ClientId::KiloCode,  sessions::kilocode::parse_kilocode_file);
-    simple_lane!(ClientId::Cline,     sessions::cline::parse_cline_file);
+    // roo family: fingerprint via from_roo_path so a history-only rewrite of the
+    // sibling api_conversation_history.json (which parse_roo_kilo_file reads for
+    // model/agent) invalidates the cached lane (#741).
+    simple_lane!(
+        ClientId::RooCode,
+        sessions::roocode::parse_roocode_file,
+        message_cache::SourceFingerprint::from_roo_path
+    );
+    simple_lane!(
+        ClientId::KiloCode,
+        sessions::kilocode::parse_kilocode_file,
+        message_cache::SourceFingerprint::from_roo_path
+    );
+    simple_lane!(
+        ClientId::Cline,
+        sessions::cline::parse_cline_file,
+        message_cache::SourceFingerprint::from_roo_path
+    );
     simple_lane!(
         ClientId::Jcode,
         sessions::jcode::parse_jcode_file,
         message_cache::SourceFingerprint::from_jcode_path
     );
     // micode is WAL-mode SQLite; fingerprint via from_sqlite_path so a `-wal`
-    // write invalidates the cache. Unlike gjc, this lane does not guard the
-    // embedded cost: apply_pricing overwrites it whenever the model resolves to
-    // a non-zero price. That is a no-op for native MiMo models (absent from the
-    // pricing dataset) but WOULD reprice a priced provider routed through MiMo
-    // Code — faithful to upstream, which passes pricing through the same loader
-    // unguarded.
+    // write invalidates the cache. MiMo Code records an authoritative per-message
+    // cost (usage.cost), so this lane is cost-guarded (`true`): apply_pricing
+    // only runs when the embedded cost is absent (`<= 0.0`), never overwriting a
+    // real embedded cost with a recomputed tokens*rate. Today MiMo models are
+    // absent from the pricing dataset so unconditional repricing would be a
+    // no-op, but the guard future-proofs against a priced provider routed
+    // through MiMo Code / the model being added to the dataset. (#742 Part 2 —
+    // upstream applies this guard in its materialized lane, which is dead code
+    // for us; the streaming lane is where the app actually reprices.)
     simple_lane!(
         ClientId::MiMoCode,
         sessions::micode::parse_micode_sqlite,
-        message_cache::SourceFingerprint::from_sqlite_path
+        message_cache::SourceFingerprint::from_sqlite_path,
+        true
     );
     simple_lane!(ClientId::Mux,       sessions::mux::parse_mux_file);
     simple_lane!(ClientId::Kiro,      sessions::kiro::parse_kiro_file);
@@ -2680,6 +2767,24 @@ fn apply_pricing_if_available(
 
     if calculated_cost > 0.0 {
         message.cost = calculated_cost;
+    }
+}
+
+/// Reprice a streaming-lane message, respecting an authoritative embedded cost.
+///
+/// Clients that record a real per-message cost of their own (e.g. MiMo Code,
+/// which stores `usage.cost`) pass `guard_authoritative_cost = true`: the
+/// message is repriced only when its embedded cost is absent (`<= 0.0`), so a
+/// recomputed `tokens * rate` never clobbers the authoritative value if the
+/// model later resolves to a price. Every other lane passes `false` and
+/// reprices unconditionally (unchanged behaviour). `#742` Part 2.
+fn reprice_lane_message(
+    message: &mut UnifiedMessage,
+    pricing: Option<&pricing::PricingService>,
+    guard_authoritative_cost: bool,
+) {
+    if !guard_authoritative_cost || message.cost <= 0.0 {
+        apply_pricing_if_available(message, pricing);
     }
 }
 
@@ -3538,7 +3643,8 @@ mod tests {
         dedupe_latest_trae_messages, fold_messages_streaming, get_agents_report, get_model_report,
         message_cache, normalize_model_for_grouping, parse_all_messages_with_pricing,
         parse_local_clients, parse_local_unified_messages, parsed_to_unified, pricing,
-        retain_for_requested_clients, scan_messages_streaming, scanner, select_local_parse_pricing,
+        reprice_lane_message, retain_for_requested_clients, scan_messages_streaming, scanner,
+        select_local_parse_pricing,
         unified_to_parsed,
         AgentAccumulator, ClientId, GroupBy, LocalParseOptions, ReportOptions, TokenBreakdown,
         UnifiedMessage, UNKNOWN_WORKSPACE_LABEL,
@@ -4850,6 +4956,43 @@ mod tests {
         assert!((acc.cost - 1.0).abs() < 1e-9);
         assert_eq!(acc.messages, 2, "message_count.max(0): 2 + 0");
         assert!(acc.clients.contains("codebuff"));
+    }
+
+    #[test]
+    fn test_agent_bucket_key_copilot_uses_copilot_normalizer() {
+        // #724/#751: copilot messages carry a raw OTEL agent id. Our agents
+        // report must prettify it with the copilot-specific normalizer (the
+        // prettification upstream does in its CLI), while other clients keep the
+        // generic normalization.
+        let msg = |client: &str, agent: &str| {
+            UnifiedMessage::new_with_agent(
+                client,
+                "m",
+                "p",
+                "s",
+                0,
+                TokenBreakdown::default(),
+                0.0,
+                Some(agent.to_string()),
+            )
+        };
+
+        // Copilot: raw OTEL ids resolve to their pretty display form.
+        assert_eq!(
+            agent_bucket_key(&msg("copilot", "github.copilot.default")),
+            "GitHub Copilot"
+        );
+        assert_eq!(
+            agent_bucket_key(&msg("copilot", "Plugin:code-review-team:api-reviewer")),
+            "Code Review Team: API Reviewer"
+        );
+
+        // A non-copilot client with the same raw id must NOT get the
+        // copilot-specific prettification (proves the branch is client-scoped).
+        assert_ne!(
+            agent_bucket_key(&msg("codebuff", "github.copilot.default")),
+            "GitHub Copilot"
+        );
     }
 
     #[test]
@@ -7609,7 +7752,7 @@ mod tests {
         std::env::set_var("HOME", cache_home.path());
 
         {
-            let micode_dir = source_home.path().join(".local/share/micode");
+            let micode_dir = source_home.path().join(".local/share/mimocode");
             std::fs::create_dir_all(&micode_dir).unwrap();
             let db_path = micode_dir.join("test.db");
             {
@@ -7655,6 +7798,73 @@ mod tests {
             Some(home) => std::env::set_var("HOME", home),
             None => std::env::remove_var("HOME"),
         }
+    }
+
+    // #742 Part 2: the micode lane is cost-guarded so MiMo Code's authoritative
+    // embedded cost is never overwritten by a recomputed tokens*rate when the
+    // model resolves to a price. reprice_lane_message(.., guard=true) reprices
+    // only when the embedded cost is absent (<= 0.0); guard=false is the old
+    // unconditional behavior that this fix replaces for micode.
+    #[test]
+    fn test_reprice_lane_message_guards_authoritative_micode_cost() {
+        // A pricing service that WOULD recompute a large cost for the MiMo model
+        // (1000*0.001 + 500*0.002 = 2.0, versus the embedded 0.05).
+        let mut litellm = HashMap::new();
+        litellm.insert(
+            "mimo-v2.5-pro".into(),
+            pricing::ModelPricing {
+                input_cost_per_token: Some(0.001),
+                output_cost_per_token: Some(0.002),
+                ..Default::default()
+            },
+        );
+        let pricing = pricing::PricingService::new(litellm, HashMap::new());
+        let recomputed = 1000.0 * 0.001 + 500.0 * 0.002; // 2.0
+
+        let make = |embedded_cost: f64| {
+            UnifiedMessage::new(
+                "micode",
+                "mimo-v2.5-pro",
+                "mimo",
+                "ses",
+                1_700_000_000_000,
+                TokenBreakdown {
+                    input: 1000,
+                    output: 500,
+                    cache_read: 0,
+                    cache_write: 0,
+                    reasoning: 0,
+                },
+                embedded_cost,
+            )
+        };
+
+        // guard=true + embedded cost present -> authoritative cost survives.
+        let mut guarded = make(0.05);
+        reprice_lane_message(&mut guarded, Some(&pricing), true);
+        assert!(
+            (guarded.cost - 0.05).abs() < 1e-9,
+            "cost-guarded reprice must keep the embedded 0.05, got {}",
+            guarded.cost
+        );
+
+        // guard=false (old behavior) -> unconditionally overwritten by the recompute.
+        let mut unguarded = make(0.05);
+        reprice_lane_message(&mut unguarded, Some(&pricing), false);
+        assert!(
+            (unguarded.cost - recomputed).abs() < 1e-9,
+            "unguarded reprice overwrites the embedded cost with {recomputed}, got {}",
+            unguarded.cost
+        );
+
+        // guard=true + embedded cost absent (<= 0.0) -> still repriced (fallback).
+        let mut absent = make(0.0);
+        reprice_lane_message(&mut absent, Some(&pricing), true);
+        assert!(
+            (absent.cost - recomputed).abs() < 1e-9,
+            "a missing embedded cost must still be priced, got {}",
+            absent.cost
+        );
     }
 
     // micode `.db` is WAL-mode SQLite reached via the generic `*.db` glob, so it
