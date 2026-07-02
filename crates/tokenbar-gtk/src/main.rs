@@ -12,6 +12,7 @@ mod data;
 mod format;
 mod graph;
 mod graph_view;
+mod hourly;
 mod list_lens;
 mod models;
 mod overview;
@@ -69,6 +70,7 @@ fn build_ui(app: &Application) {
     let graph_view = Rc::new(GraphView::new());
     let overview = Rc::new(Overview::new());
     let daily = daily::new();
+    let hourly = hourly::HourlyView::new();
     let models = models::new();
     let agents = agents::new();
 
@@ -78,16 +80,19 @@ fn build_ui(app: &Application) {
     stack.add_titled_with_icon(graph_view.widget(), Some("graph"), "Graph", "view-grid-symbolic");
     stack.add_titled_with_icon(overview.widget(), Some("overview"), "Overview", "view-list-symbolic");
     stack.add_titled_with_icon(daily.widget(), Some("daily"), "Daily", "x-office-calendar-symbolic");
+    stack.add_titled_with_icon(hourly.widget(), Some("hourly"), "Hourly", "preferences-system-time-symbolic");
     stack.add_titled_with_icon(models.widget(), Some("models"), "Models", "view-columns-symbolic");
     stack.add_titled_with_icon(agents.widget(), Some("agents"), "Agents", "system-users-symbolic");
 
     // Lazily load report-backed lenses the first time they're shown.
     stack.connect_visible_child_name_notify({
         let daily = daily.clone();
+        let hourly = hourly.clone();
         let models = models.clone();
         let agents = agents.clone();
         move |stack| match stack.visible_child_name().as_deref() {
             Some("daily") => daily.ensure_loaded(),
+            Some("hourly") => hourly.ensure_loaded(),
             Some("models") => models.ensure_loaded(),
             Some("agents") => agents.ensure_loaded(),
             _ => {}

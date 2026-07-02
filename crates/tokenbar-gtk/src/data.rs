@@ -117,6 +117,13 @@ pub fn load_agents() -> Option<Value> {
     })
 }
 
+/// Raw per-hour report payload (cached). Interpreted by the Hourly lens.
+pub fn load_hourly() -> Option<Value> {
+    cached_payload("hourly-cache.json", "hourly", || {
+        tb_reports::hourly_report::run("")
+    })
+}
+
 /// Headline totals for the Overview lens.
 #[derive(Debug, Clone, Default)]
 pub struct GraphSummary {
