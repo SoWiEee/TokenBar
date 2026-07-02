@@ -110,6 +110,13 @@ pub fn load_models() -> Option<Value> {
     })
 }
 
+/// Raw per-agent report payload (cached). Interpreted by the Agents lens.
+pub fn load_agents() -> Option<Value> {
+    cached_payload("agents-cache.json", "agents", || {
+        tb_reports::agents_report::run("")
+    })
+}
+
 /// Headline totals for the Overview lens.
 #[derive(Debug, Clone, Default)]
 pub struct GraphSummary {

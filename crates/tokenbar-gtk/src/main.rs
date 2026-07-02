@@ -5,11 +5,13 @@
 //! data the macOS app renders. Phase 2 adds the window chrome and view switcher
 //! around the Phase 1 graph.
 
+mod agents;
 mod camera;
 mod data;
 mod format;
 mod graph;
 mod graph_view;
+mod list_lens;
 mod models;
 mod overview;
 mod renderer;
@@ -25,7 +27,6 @@ use adw::{
 use gtk4::glib;
 
 use graph_view::GraphView;
-use models::ModelsView;
 use overview::Overview;
 
 const APP_ID: &str = "com.nyanako.tokenbar.gtk";
@@ -66,7 +67,8 @@ fn main() -> glib::ExitCode {
 fn build_ui(app: &Application) {
     let graph_view = Rc::new(GraphView::new());
     let overview = Rc::new(Overview::new());
-    let models = ModelsView::new();
+    let models = models::new();
+    let agents = agents::new();
 
     // View switcher over the lenses. The 3D graph is the first page; more
     // lenses slot in here. Report-backed lenses load lazily on first view.
@@ -74,14 +76,16 @@ fn build_ui(app: &Application) {
     stack.add_titled_with_icon(graph_view.widget(), Some("graph"), "Graph", "view-grid-symbolic");
     stack.add_titled_with_icon(overview.widget(), Some("overview"), "Overview", "view-list-symbolic");
     stack.add_titled_with_icon(models.widget(), Some("models"), "Models", "view-columns-symbolic");
+    stack.add_titled_with_icon(agents.widget(), Some("agents"), "Agents", "system-users-symbolic");
 
     // Lazily load report-backed lenses the first time they're shown.
     stack.connect_visible_child_name_notify({
         let models = models.clone();
-        move |stack| {
-            if stack.visible_child_name().as_deref() == Some("models") {
-                models.ensure_loaded();
-            }
+        let agents = agents.clone();
+        move |stack| match stack.visible_child_name().as_deref() {
+            Some("models") => models.ensure_loaded(),
+            Some("agents") => agents.ensure_loaded(),
+            _ => {}
         }
     });
 

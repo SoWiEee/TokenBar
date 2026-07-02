@@ -1,5 +1,6 @@
-//! Models lens: every model ranked by cost (a `ListLens` over
-//! `tb_reports::model_report`).
+//! Agents lens: sub-agents ranked by cost (a `ListLens` over
+//! `tb_reports::agents_report`). Messages with no agent attribution fold into a
+//! single "Main" bucket upstream, so every message is accounted for.
 
 use std::rc::Rc;
 
@@ -11,10 +12,10 @@ use crate::list_lens::{i64_field, str_field, ListLens, ListRow};
 
 pub fn new() -> Rc<ListLens> {
     ListLens::new(
-        "Models by cost",
-        "No model usage found",
+        "Agents by cost",
+        "No agent usage found",
         "Run an agent, then reopen TokenBar",
-        data::load_models,
+        data::load_agents,
         map_rows,
     )
 }
@@ -27,13 +28,23 @@ fn map_rows(payload: &Value) -> Vec<ListRow> {
         .iter()
         .map(|e| {
             let cost = e.get("cost").and_then(Value::as_f64).unwrap_or(0.0);
+            let clients = e
+                .get("clients")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
             let row = ListRow {
-                title: str_field(e, "model", "unknown"),
+                title: str_field(e, "agent", "Main"),
                 subtitle: format!(
                     "{} · {} tokens · {} msgs",
-                    str_field(e, "provider", ""),
+                    clients,
                     compact(i64_field(e, "total")),
-                    group_thousands(i64_field(e, "messageCount"))
+                    group_thousands(i64_field(e, "messages"))
                 ),
                 value: format!("${cost:.2}"),
             };
