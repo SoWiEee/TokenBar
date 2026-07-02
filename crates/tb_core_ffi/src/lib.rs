@@ -10,9 +10,12 @@
 //! frontend contract (`src/lib/types.ts` / `src/lib/agentUsage.ts` in the
 //! TokenBar-tokcat repo) exactly.
 //!
-//! The report modules are ports of the Tauri backend modules of the same
-//! names (TokenBar-tokcat/src-tauri/src/*.rs) with the Tauri command plumbing
-//! stripped; keep them diffable against the originals.
+//! The report/agent logic now lives in the `tb_reports` crate; its modules
+//! remain ports of the Tauri backend modules of the same names
+//! (TokenBar-tokcat/src-tauri/src/*.rs) with the Tauri command plumbing
+//! stripped, kept diffable against the originals. This crate is now the thin
+//! C-ABI shim over `tb_reports`: the envelope/guarded/`tb_free` machinery
+//! plus the cache, tail-tick, and runtime orchestration below.
 
 use tb_reports::usage_tail::UsageTailer;
 use tb_reports::{agent_usage, agents_report, hourly_report, model_report, usage_graph};
