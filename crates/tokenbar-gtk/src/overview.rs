@@ -18,6 +18,7 @@ pub struct Overview {
     tokens: Label,
     cost: Label,
     active: Label,
+    live: Label,
     quota_group: PreferencesGroup,
     quota_loading: ActionRow,
     quota_loaded: Cell<bool>,
@@ -30,9 +31,11 @@ impl Overview {
         let (tokens_tile, tokens) = stat_tile("Total tokens");
         let (cost_tile, cost) = stat_tile("Total cost");
         let (active_tile, active) = stat_tile("Active days");
+        let (live_tile, live) = stat_tile("Tokens/min · live");
         tiles.append(&tokens_tile);
         tiles.append(&cost_tile);
         tiles.append(&active_tile);
+        tiles.append(&live_tile);
 
         let quota_group = PreferencesGroup::builder()
             .title("Subscription quota")
@@ -55,10 +58,16 @@ impl Overview {
             tokens,
             cost,
             active,
+            live,
             quota_group,
             quota_loading,
             quota_loaded: Cell::new(false),
         })
+    }
+
+    /// Update the live tokens/min tile.
+    pub fn set_live(&self, tokens_per_min: f64) {
+        self.live.set_text(&crate::format::compact(tokens_per_min.round() as i64));
     }
 
     pub fn widget(&self) -> &ScrolledWindow {

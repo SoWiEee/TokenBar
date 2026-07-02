@@ -169,6 +169,7 @@ fn build_ui(
     });
 
     spawn_data_load(graph_view.clone(), overview.clone(), tray);
+    spawn_live_tail(overview.clone());
 
     // Dev aid: TOKENBAR_START_PAGE=<id> opens on a given lens (for screenshots).
     if let Some(page) = std::env::var_os("TOKENBAR_START_PAGE").and_then(|s| s.into_string().ok()) {
@@ -199,6 +200,38 @@ fn spawn_data_load(
         if let Some(handle) = tray.as_ref() {
             let (tokens, cost) = graph_data.today;
             handle.update(|t| t.set_today(tokens, cost));
+        }
+    });
+}
+
+/// Poll the live token rate every 10s on a worker thread (the tailer skips the
+/// re-parse when no source file changed) and push tokens/min into the Overview
+/// live tile. 600s window = a 10-minute average, matching the macOS app.
+fn spawn_live_tail(overview: Rc<Overview>) {
+    let tailer = std::sync::Arc::new(tb_reports::usage_tail::UsageTailer::new());
+    let (rate_tx, rate_rx) = async_channel::unbounded::<f32>();
+
+    let spawn_tick = {
+        let tailer = tailer.clone();
+        let rate_tx = rate_tx.clone();
+        move || {
+            let tailer = tailer.clone();
+            let rate_tx = rate_tx.clone();
+            std::thread::spawn(move || {
+                tailer.tick();
+                let _ = rate_tx.send_blocking(tailer.rate_in_window(600));
+            });
+        }
+    };
+    spawn_tick(); // initial reading
+    glib::timeout_add_seconds_local(10, move || {
+        spawn_tick();
+        glib::ControlFlow::Continue
+    });
+
+    glib::spawn_future_local(async move {
+        while let Ok(rate) = rate_rx.recv().await {
+            overview.set_live(rate as f64);
         }
     });
 }
