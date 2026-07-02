@@ -134,11 +134,14 @@ pub struct GraphData {
 
 /// Load usage from the shared core. Falls back to the demo grid + empty summary
 /// when there is no local data or the core call fails, so the UI is never blank.
+/// Raw contribution-graph payload (cached). Shared by the 3D graph, Overview,
+/// Daily, and Stats lenses so they never trigger a second parse.
+pub fn load_graph_raw() -> Option<Value> {
+    cached_payload("graph-cache.json", "graph", || tb_reports::usage_graph::run(""))
+}
+
 pub fn load() -> GraphData {
-    let payload = cached_payload("graph-cache.json", "graph", || {
-        tb_reports::usage_graph::run("")
-    });
-    match payload {
+    match load_graph_raw() {
         Some(payload) => {
             let bars = bars_from_payload(&payload).unwrap_or_else(|| {
                 eprintln!("usage graph had no contributions; using demo grid");

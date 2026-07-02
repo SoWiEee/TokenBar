@@ -7,6 +7,7 @@
 
 mod agents;
 mod camera;
+mod daily;
 mod data;
 mod format;
 mod graph;
@@ -67,6 +68,7 @@ fn main() -> glib::ExitCode {
 fn build_ui(app: &Application) {
     let graph_view = Rc::new(GraphView::new());
     let overview = Rc::new(Overview::new());
+    let daily = daily::new();
     let models = models::new();
     let agents = agents::new();
 
@@ -75,14 +77,17 @@ fn build_ui(app: &Application) {
     let stack = ViewStack::new();
     stack.add_titled_with_icon(graph_view.widget(), Some("graph"), "Graph", "view-grid-symbolic");
     stack.add_titled_with_icon(overview.widget(), Some("overview"), "Overview", "view-list-symbolic");
+    stack.add_titled_with_icon(daily.widget(), Some("daily"), "Daily", "x-office-calendar-symbolic");
     stack.add_titled_with_icon(models.widget(), Some("models"), "Models", "view-columns-symbolic");
     stack.add_titled_with_icon(agents.widget(), Some("agents"), "Agents", "system-users-symbolic");
 
     // Lazily load report-backed lenses the first time they're shown.
     stack.connect_visible_child_name_notify({
+        let daily = daily.clone();
         let models = models.clone();
         let agents = agents.clone();
         move |stack| match stack.visible_child_name().as_deref() {
+            Some("daily") => daily.ensure_loaded(),
             Some("models") => models.ensure_loaded(),
             Some("agents") => agents.ensure_loaded(),
             _ => {}
@@ -110,6 +115,11 @@ fn build_ui(app: &Application) {
         .build();
 
     spawn_data_load(graph_view.clone(), overview.clone());
+
+    // Dev aid: TOKENBAR_START_PAGE=<id> opens on a given lens (for screenshots).
+    if let Some(page) = std::env::var_os("TOKENBAR_START_PAGE").and_then(|s| s.into_string().ok()) {
+        stack.set_visible_child_name(&page);
+    }
 
     window.present();
 }
