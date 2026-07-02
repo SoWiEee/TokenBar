@@ -18,6 +18,7 @@ mod models;
 mod overview;
 mod renderer;
 mod stats;
+mod tray;
 
 use std::ptr;
 use std::rc::Rc;
@@ -62,12 +63,17 @@ fn main() -> glib::ExitCode {
         });
     }
 
+    // Tray runs on its own thread and forwards clicks/menu actions to the UI.
+    // Keep the handle alive for the whole process (dropping it removes the tray).
+    let (cmd_tx, cmd_rx) = async_channel::unbounded::<tray::TrayCmd>();
+    let _tray = tray::spawn(cmd_tx);
+
     let app = Application::builder().application_id(APP_ID).build();
-    app.connect_activate(build_ui);
+    app.connect_activate(move |app| build_ui(app, &cmd_rx));
     app.run()
 }
 
-fn build_ui(app: &Application) {
+fn build_ui(app: &Application, cmd_rx: &async_channel::Receiver<tray::TrayCmd>) {
     let graph_view = Rc::new(GraphView::new());
     let overview = Rc::new(Overview::new());
     let daily = daily::new();
@@ -124,6 +130,29 @@ fn build_ui(app: &Application) {
         .title("TokenBar")
         .content(&toolbar)
         .build();
+    // Closing hides to the tray instead of quitting (the app lives in the tray).
+    window.set_hide_on_close(true);
+
+    // Apply tray commands (toggle window / quit) on the UI thread.
+    glib::spawn_future_local({
+        let window = window.clone();
+        let app = app.clone();
+        let cmd_rx = cmd_rx.clone();
+        async move {
+            while let Ok(cmd) = cmd_rx.recv().await {
+                match cmd {
+                    tray::TrayCmd::Toggle => {
+                        if window.is_visible() {
+                            window.set_visible(false);
+                        } else {
+                            window.present();
+                        }
+                    }
+                    tray::TrayCmd::Quit => app.quit(),
+                }
+            }
+        }
+    });
 
     spawn_data_load(graph_view.clone(), overview.clone());
 
