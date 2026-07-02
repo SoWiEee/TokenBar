@@ -1,0 +1,8 @@
+{
+  "uuid": "tokenbar@nyanako.io",
+  "name": "TokenBar",
+  "description": "Today's AI-agent token usage, cost, and subscription quota in the top bar, with a popover. Companion to the TokenBar GTK app — reads its cache (~/.cache/tokenbar-gtk) and can open the full app for the 3D graph and per-model/agent lenses.",
+  "shell-version": ["45", "46", "47", "48"],
+  "url": "https://github.com/SoWiEee/TokenBar",
+  "version-name": "0.1.0"
+}

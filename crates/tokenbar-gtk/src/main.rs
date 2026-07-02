@@ -52,6 +52,15 @@ fn main() -> glib::ExitCode {
         return glib::ExitCode::SUCCESS;
     }
 
+    // Headless cache refresh: recompute graph + quota into the disk cache and
+    // exit (no window). Used by the GNOME Shell extension to keep its panel
+    // fresh without opening the app.
+    if std::env::args().any(|a| a == "--refresh") {
+        let _ = data::load();
+        let _ = data::load_quota();
+        return glib::ExitCode::SUCCESS;
+    }
+
     // Load GL function pointers through epoxy so glow can resolve them at
     // realize time via `epoxy::get_proc_addr`.
     {
