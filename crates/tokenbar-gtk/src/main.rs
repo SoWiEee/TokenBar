@@ -104,9 +104,10 @@ fn build_ui(app: &Application) {
         }
     });
 
+    // Icon-only (Narrow) so all seven lenses fit a compact, popover-width header.
     let switcher = ViewSwitcher::builder()
         .stack(&stack)
-        .policy(ViewSwitcherPolicy::Wide)
+        .policy(ViewSwitcherPolicy::Narrow)
         .build();
 
     let header = HeaderBar::new();
