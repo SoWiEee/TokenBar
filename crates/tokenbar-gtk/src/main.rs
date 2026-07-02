@@ -36,6 +36,8 @@ use overview::Overview;
 const APP_ID: &str = "com.nyanako.tokenbar.gtk";
 
 fn main() -> glib::ExitCode {
+    force_glx_on_x11();
+
     // Headless data probe: load once, report counts, exit. No GL, no display.
     if std::env::args().any(|a| a == "--probe") {
         let t = std::time::Instant::now();
@@ -79,6 +81,18 @@ fn main() -> glib::ExitCode {
     let app = Application::builder().application_id(APP_ID).build();
     app.connect_activate(move |app| build_ui(app, &cmd_rx, tray.clone()));
     app.run()
+}
+
+/// On X11, force GDK's GL backend to GLX. GTK4 defaults to EGL, which fails to
+/// create a GL context on some NVIDIA/remote-X setups ("Unable to create a GL
+/// context"), while GLX is reliable on X11. Left untouched on Wayland (which
+/// uses EGL) and when the user already set GDK_DEBUG. Must run before GTK init.
+fn force_glx_on_x11() {
+    let is_x11 =
+        std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some();
+    if is_x11 && std::env::var_os("GDK_DEBUG").is_none() {
+        std::env::set_var("GDK_DEBUG", "gl-glx");
+    }
 }
 
 fn build_ui(
