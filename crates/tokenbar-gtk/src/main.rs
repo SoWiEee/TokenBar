@@ -5,6 +5,7 @@
 //! graph (backed by the shared `tb_reports` core) replaces the triangle once
 //! the chain is confirmed.
 
+mod graph;
 mod renderer;
 
 use std::cell::RefCell;
@@ -59,7 +60,9 @@ fn build_ui(app: &Application) {
             }
             let gl =
                 unsafe { glow::Context::from_loader_function(|s| epoxy::get_proc_addr(s) as *const _) };
-            match Renderer::new(gl) {
+            // A GitHub-style year: 53 weeks × 7 days. Demo data for now.
+            let bars = graph::demo_grid(53, 7);
+            match Renderer::new(gl, &bars) {
                 Ok(r) => *state.borrow_mut() = Some(r),
                 Err(e) => eprintln!("renderer init failed: {e}"),
             }
@@ -68,9 +71,11 @@ fn build_ui(app: &Application) {
 
     gl_area.connect_render({
         let state = state.clone();
-        move |_area, _ctx| {
+        move |area, _ctx| {
             if let Some(renderer) = state.borrow().as_ref() {
-                renderer.draw();
+                let w = area.width().max(1) as f32;
+                let h = area.height().max(1) as f32;
+                renderer.draw(w / h);
             }
             glib::Propagation::Stop
         }

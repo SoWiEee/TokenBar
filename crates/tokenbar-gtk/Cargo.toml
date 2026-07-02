@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 adw = { version = "0.9.1", package = "libadwaita", features = ["v1_5"] }
 epoxy = "0.1.0"
+glam = "0.33.2"
 glow = "0.17.0"
 gtk4 = { version = "0.11.4", features = ["v4_14"] }
 libloading = "0.9.0"
