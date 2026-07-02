@@ -71,6 +71,19 @@ where
     bars
 }
 
+/// Bounding-sphere radius of a set of bars (about the origin), accounting for
+/// the horizontal footprint plus a fraction of the tallest bar — used to frame
+/// the camera to any grid size.
+pub fn bounding_radius(bars: &[Bar]) -> f32 {
+    let mut max_xz = 1.0_f32;
+    let mut max_h = 0.0_f32;
+    for b in bars {
+        max_xz = max_xz.max((b.x * b.x + b.z * b.z).sqrt());
+        max_h = max_h.max(b.height);
+    }
+    max_xz + max_h * 0.5
+}
+
 /// Demo pattern for Step B: a smooth, varied field so the grid looks like real
 /// lumpy usage before `tb_reports` is wired in.
 pub fn demo_grid(cols: usize, rows: usize) -> Vec<Bar> {

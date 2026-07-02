@@ -136,6 +136,18 @@ impl Renderer {
         }
     }
 
+    /// Replace the instance buffer with a new set of bars (e.g. real data
+    /// arriving from the worker thread). The GLArea context must be current.
+    pub fn set_bars(&mut self, bars: &[Bar]) {
+        let inst = instance_data(bars);
+        unsafe {
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, Some(self.inst_vbo));
+            self.gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, as_bytes(&inst), glow::STATIC_DRAW);
+            self.gl.bind_buffer(glow::ARRAY_BUFFER, None);
+        }
+        self.instance_count = bars.len() as i32;
+    }
+
     /// Draw all bars with the given view-projection matrix (from the camera).
     pub fn draw(&self, vp: &Mat4) {
         let gl = &self.gl;

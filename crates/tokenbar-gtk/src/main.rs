@@ -5,6 +5,7 @@
 //! `tb_reports` crate (real data wired in next; demo data for now).
 
 mod camera;
+mod data;
 mod graph;
 mod renderer;
 
@@ -25,6 +26,21 @@ const ORBIT_SENSITIVITY: f32 = 0.008;
 const ZOOM_STEP: f32 = 0.1;
 
 fn main() -> glib::ExitCode {
+    // Headless data probe: load the bars, report count + timing, exit. No GL,
+    // no display — used to diagnose the data path independently of the GUI.
+    if std::env::args().any(|a| a == "--probe") {
+        let t = std::time::Instant::now();
+        let bars = data::load_bars();
+        let tallest = bars.iter().map(|b| b.height).fold(0.0_f32, f32::max);
+        eprintln!(
+            "load_bars: {} bars, tallest {:.2}, in {:?}",
+            bars.len(),
+            tallest,
+            t.elapsed()
+        );
+        return glib::ExitCode::SUCCESS;
+    }
+
     // Load GL function pointers through epoxy so glow can resolve them at
     // realize time via `epoxy::get_proc_addr`.
     {
@@ -44,10 +60,11 @@ fn main() -> glib::ExitCode {
 }
 
 fn build_ui(app: &Application) {
-    // A GitHub-style year: 53 weeks × 7 days. Demo data until tb_reports is wired.
-    let bars = Rc::new(graph::demo_grid(53, 7));
-    let extent = bars.iter().map(|b| b.x.abs()).fold(1.0_f32, f32::max);
-    let cam = Rc::new(RefCell::new(Orbit::framing(extent)));
+    // Start with a flat placeholder grid so the window is instant; real usage
+    // loads on a worker thread (parsing + first-run pricing fetch is slow) and
+    // swaps in when ready.
+    let placeholder = graph::grid_from(24, 7, |_, _| 0.0);
+    let cam = Rc::new(RefCell::new(Orbit::fit(graph::bounding_radius(&placeholder))));
 
     let gl_area = GLArea::new();
     // Force desktop GL (not GLES) for the `#version 330 core` shaders; request a
@@ -61,7 +78,6 @@ fn build_ui(app: &Application) {
 
     gl_area.connect_realize({
         let state = state.clone();
-        let bars = bars.clone();
         move |area| {
             area.make_current();
             if let Some(err) = area.error() {
@@ -71,12 +87,14 @@ fn build_ui(app: &Application) {
             let gl = unsafe {
                 glow::Context::from_loader_function(|s| epoxy::get_proc_addr(s) as *const _)
             };
-            match Renderer::new(gl, &bars) {
+            match Renderer::new(gl, &placeholder) {
                 Ok(r) => *state.borrow_mut() = Some(r),
                 Err(e) => eprintln!("renderer init failed: {e}"),
             }
         }
     });
+
+    spawn_data_load(&gl_area, &state, &cam);
 
     gl_area.connect_render({
         let state = state.clone();
@@ -109,6 +127,34 @@ fn build_ui(app: &Application) {
         .content(&gl_area)
         .build();
     window.present();
+}
+
+/// Load the real usage bars on a worker thread and swap them into the renderer
+/// on the UI thread when ready, re-framing the camera to the loaded grid.
+fn spawn_data_load(
+    gl_area: &GLArea,
+    state: &Rc<RefCell<Option<Renderer>>>,
+    cam: &Rc<RefCell<Orbit>>,
+) {
+    let (tx, rx) = async_channel::bounded::<Vec<graph::Bar>>(1);
+    std::thread::spawn(move || {
+        let _ = tx.send_blocking(data::load_bars());
+    });
+
+    let gl_area = gl_area.clone();
+    let state = state.clone();
+    let cam = cam.clone();
+    glib::spawn_future_local(async move {
+        let Ok(bars) = rx.recv().await else {
+            return;
+        };
+        if let Some(renderer) = state.borrow_mut().as_mut() {
+            gl_area.make_current();
+            renderer.set_bars(&bars);
+        }
+        *cam.borrow_mut() = Orbit::fit(graph::bounding_radius(&bars));
+        gl_area.queue_render();
+    });
 }
 
 /// Drag to orbit (azimuth/elevation), scroll to zoom. Absolute-from-start drag

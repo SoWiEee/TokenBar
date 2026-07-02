@@ -18,13 +18,18 @@ const DISTANCE_MIN: f32 = 3.0;
 const DISTANCE_MAX: f32 = 400.0;
 
 impl Orbit {
-    /// A 3/4 top-down framing scaled to a grid of half-width `extent`.
-    pub fn framing(extent: f32) -> Self {
+    /// Vertical field of view (radians) used for both framing and projection.
+    const FOV_Y: f32 = 45.0 * std::f32::consts::PI / 180.0;
+
+    /// A 3/4 top-down framing that fits a grid whose bounding sphere has the
+    /// given `radius` (world units) into the viewport, with a little margin.
+    pub fn fit(radius: f32) -> Self {
+        let distance = (radius / (Self::FOV_Y * 0.5).tan() * 1.15).max(DISTANCE_MIN);
         Self {
             azimuth: -0.55,
             elevation: 0.82,
-            distance: (extent * 1.7).max(DISTANCE_MIN),
-            target: vec3(0.0, 0.4, 0.0),
+            distance,
+            target: vec3(0.0, radius * 0.12, 0.0),
         }
     }
 
@@ -34,9 +39,12 @@ impl Orbit {
         self.target + self.distance * vec3(ce * sa, se, ce * ca)
     }
 
+    // glam deprecated perspective_rh_gl/look_at_rh in 0.33 in favor of its new
+    // `camera` module; the classic helpers still work. TODO: migrate.
+    #[allow(deprecated)]
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
         let far = self.distance * 4.0 + 50.0;
-        let proj = Mat4::perspective_rh_gl(45f32.to_radians(), aspect.max(0.01), 0.1, far);
+        let proj = Mat4::perspective_rh_gl(Self::FOV_Y, aspect.max(0.01), 0.1, far);
         let view = Mat4::look_at_rh(self.eye(), self.target, Vec3::Y);
         proj * view
     }
