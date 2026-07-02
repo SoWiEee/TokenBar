@@ -6,14 +6,17 @@
 use std::path::PathBuf;
 
 /// Point HOME/XDG at an empty temp dir so no real logs are discovered, and
-/// route tokscale's config dir there too. Returns the guard dir (kept alive
-/// for the test's duration).
+/// route tokscale's config dir there too. Also isolates XDG_DATA_HOME and
+/// CODEX_HOME so a real dev/CI shell can't leak session data into the test.
+/// Returns the guard dir (kept alive for the test's duration).
 fn isolated_home() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("tb-reports-smoke-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::env::set_var("HOME", &dir);
     std::env::set_var("XDG_CONFIG_HOME", dir.join(".config"));
     std::env::set_var("TOKSCALE_CONFIG_DIR", dir.join("tokscale"));
+    std::env::set_var("XDG_DATA_HOME", dir.join(".local/share"));
+    std::env::set_var("CODEX_HOME", dir.join(".codex"));
     dir
 }
 
