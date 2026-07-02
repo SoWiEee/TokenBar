@@ -9,10 +9,97 @@
 //! fetch pricing). It is already driven from a worker thread in `main`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Instant;
 
 use chrono::{Datelike, Duration, NaiveDate};
+use serde_json::Value;
 
 use crate::graph::{self, Bar};
+
+/// Disk cache for the computed usage-graph payload, keyed by the newest source
+/// mtime. Parsing ~1.5 GB of session logs takes tens of seconds; when nothing
+/// changed since the last run we reload the payload instead of re-parsing.
+fn cache_path() -> Option<PathBuf> {
+    Some(dirs::cache_dir()?.join("tokenbar-gtk").join("graph-cache.json"))
+}
+
+/// The mtime token identifying the current state of all source logs. A fast
+/// stat sweep — orders of magnitude cheaper than parsing them.
+fn source_token() -> Option<u64> {
+    tokscale_core::latest_source_mtime_ms(&tokscale_core::LocalParseOptions::default()).ok()
+}
+
+fn read_cache_file() -> Option<Value> {
+    let raw = std::fs::read_to_string(cache_path()?).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// Return the cached payload iff it was computed for the given `token`.
+fn read_cache(token: u64) -> Option<Value> {
+    let cached = read_cache_file()?;
+    if cached.get("token")?.as_u64()? == token {
+        cached.get("payload").cloned()
+    } else {
+        None
+    }
+}
+
+/// Return the cached payload regardless of freshness (stale-ok / offline mode).
+fn read_cache_any() -> Option<Value> {
+    read_cache_file()?.get("payload").cloned()
+}
+
+/// Persist the payload against `token` (best-effort; failures are non-fatal).
+fn write_cache(token: u64, payload: &Value) {
+    let Some(path) = cache_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let entry = serde_json::json!({ "token": token, "payload": payload });
+    if let Ok(text) = serde_json::to_string(&entry) {
+        let _ = std::fs::write(&path, text);
+    }
+}
+
+/// Load the usage-graph payload, using the disk cache when the source logs are
+/// unchanged since the last computation.
+fn load_payload() -> Option<Value> {
+    let started = Instant::now();
+
+    // Stale-ok / offline: serve any cached payload without re-parsing. Useful
+    // for fast iteration and for opening the app while an agent is actively
+    // writing logs (which otherwise invalidates the mtime key every few
+    // seconds). Set TOKENBAR_CACHE_STALE_OK=1.
+    if std::env::var_os("TOKENBAR_CACHE_STALE_OK").is_some() {
+        if let Some(payload) = read_cache_any() {
+            eprintln!("graph cache (stale-ok) in {:?}", started.elapsed());
+            return Some(payload);
+        }
+    }
+
+    let token = source_token();
+    if let Some(token) = token {
+        if let Some(payload) = read_cache(token) {
+            eprintln!("graph cache hit in {:?}", started.elapsed());
+            return Some(payload);
+        }
+    }
+
+    match tb_reports::usage_graph::run("") {
+        Ok(payload) => {
+            eprintln!("graph parsed in {:?}", started.elapsed());
+            if let Some(token) = token {
+                write_cache(token, &payload);
+            }
+            Some(payload)
+        }
+        Err(e) => {
+            eprintln!("usage_graph::run failed: {e}");
+            None
+        }
+    }
+}
 
 /// Headline totals for the Overview lens.
 #[derive(Debug, Clone, Default)]
@@ -32,8 +119,8 @@ pub struct GraphData {
 /// Load usage from the shared core. Falls back to the demo grid + empty summary
 /// when there is no local data or the core call fails, so the UI is never blank.
 pub fn load() -> GraphData {
-    match tb_reports::usage_graph::run("") {
-        Ok(payload) => {
+    match load_payload() {
+        Some(payload) => {
             let bars = bars_from_payload(&payload).unwrap_or_else(|| {
                 eprintln!("usage graph had no contributions; using demo grid");
                 graph::demo_grid(53, 7)
@@ -41,13 +128,10 @@ pub fn load() -> GraphData {
             let summary = summary_from_payload(&payload);
             GraphData { bars, summary }
         }
-        Err(e) => {
-            eprintln!("usage_graph::run failed: {e}; using demo grid");
-            GraphData {
-                bars: graph::demo_grid(53, 7),
-                summary: GraphSummary::default(),
-            }
-        }
+        None => GraphData {
+            bars: graph::demo_grid(53, 7),
+            summary: GraphSummary::default(),
+        },
     }
 }
 
