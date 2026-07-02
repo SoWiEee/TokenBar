@@ -1754,14 +1754,9 @@ dependencies = [
 name = "tb_core_ffi"
 version = "0.1.0"
 dependencies = [
- "base64",
- "chrono",
- "dirs",
- "parking_lot",
  "rayon",
- "reqwest 0.13.4",
- "serde",
  "serde_json",
+ "tb_reports",
  "tokio",
  "tokscale-core",
 ]

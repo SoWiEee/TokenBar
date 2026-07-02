@@ -14,23 +14,13 @@
 //! names (TokenBar-tokcat/src-tauri/src/*.rs) with the Tauri command plumbing
 //! stripped; keep them diffable against the originals.
 
-mod agent_antigravity;
-mod agent_copilot;
-mod agent_history;
-mod agent_usage;
-mod agents_report;
-mod hourly_report;
-mod model_report;
-mod opencode_integrations;
-mod usage_graph;
-mod usage_tail;
+use tb_reports::usage_tail::UsageTailer;
+use tb_reports::{agent_usage, agents_report, hourly_report, model_report, usage_graph};
 
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
-
-use usage_tail::UsageTailer;
 
 /// Serve `tb_graph` from cache when the last computation is at most this old;
 /// `tb_refresh_graph` always recomputes. Mirrors the Tauri app's oneshot cache.
@@ -376,7 +366,7 @@ pub unsafe extern "C" fn tb_free(p: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use usage_tail::UsageTailer;
+    use tb_reports::usage_tail::UsageTailer;
 
     /// Read a heap JSON pointer into an owned String and free it — the test-side
     /// equivalent of Swift's `decode`/`tb_free`.
