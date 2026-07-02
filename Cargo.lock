@@ -1754,6 +1754,17 @@ dependencies = [
 name = "tb_core_ffi"
 version = "0.1.0"
 dependencies = [
+ "rayon",
+ "serde_json",
+ "tb_reports",
+ "tokio",
+ "tokscale-core",
+]
+
+[[package]]
+name = "tb_reports"
+version = "0.1.0"
+dependencies = [
  "base64",
  "chrono",
  "dirs",
