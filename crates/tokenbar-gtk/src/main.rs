@@ -67,18 +67,25 @@ fn main() -> glib::ExitCode {
     // Keep the handle alive for the whole process (dropping it removes the tray).
     let (cmd_tx, cmd_rx) = async_channel::unbounded::<tray::TrayCmd>();
     // TOKENBAR_NO_TRAY=1 disables the tray (for isolating perf issues).
-    let _tray = if std::env::var_os("TOKENBAR_NO_TRAY").is_some() {
+    let tray = if std::env::var_os("TOKENBAR_NO_TRAY").is_some() {
         None
     } else {
         tray::spawn(cmd_tx)
     };
+    // Shared so build_ui can update the tooltip once data loads; also keeps the
+    // handle alive for the process lifetime (dropping it removes the tray).
+    let tray = Rc::new(tray);
 
     let app = Application::builder().application_id(APP_ID).build();
-    app.connect_activate(move |app| build_ui(app, &cmd_rx));
+    app.connect_activate(move |app| build_ui(app, &cmd_rx, tray.clone()));
     app.run()
 }
 
-fn build_ui(app: &Application, cmd_rx: &async_channel::Receiver<tray::TrayCmd>) {
+fn build_ui(
+    app: &Application,
+    cmd_rx: &async_channel::Receiver<tray::TrayCmd>,
+    tray: Rc<Option<tray::TrayHandle>>,
+) {
     let graph_view = Rc::new(GraphView::new());
     let overview = Rc::new(Overview::new());
     let daily = daily::new();
@@ -159,7 +166,7 @@ fn build_ui(app: &Application, cmd_rx: &async_channel::Receiver<tray::TrayCmd>) 
         }
     });
 
-    spawn_data_load(graph_view.clone(), overview.clone());
+    spawn_data_load(graph_view.clone(), overview.clone(), tray);
 
     // Dev aid: TOKENBAR_START_PAGE=<id> opens on a given lens (for screenshots).
     if let Some(page) = std::env::var_os("TOKENBAR_START_PAGE").and_then(|s| s.into_string().ok()) {
@@ -171,7 +178,11 @@ fn build_ui(app: &Application, cmd_rx: &async_channel::Receiver<tray::TrayCmd>) 
 
 /// Load usage on a worker thread and, when ready, push it to every view on the
 /// UI thread (the window stays responsive during the slow first load).
-fn spawn_data_load(graph_view: Rc<GraphView>, overview: Rc<Overview>) {
+fn spawn_data_load(
+    graph_view: Rc<GraphView>,
+    overview: Rc<Overview>,
+    tray: Rc<Option<tray::TrayHandle>>,
+) {
     let (tx, rx) = async_channel::bounded::<data::GraphData>(1);
     std::thread::spawn(move || {
         let _ = tx.send_blocking(data::load());
@@ -183,5 +194,9 @@ fn spawn_data_load(graph_view: Rc<GraphView>, overview: Rc<Overview>) {
         };
         graph_view.apply_bars(&graph_data.bars);
         overview.update(&graph_data.summary);
+        if let Some(handle) = tray.as_ref() {
+            let (tokens, cost) = graph_data.today;
+            handle.update(|t| t.set_today(tokens, cost));
+        }
     });
 }

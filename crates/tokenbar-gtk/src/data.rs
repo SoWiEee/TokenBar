@@ -137,6 +137,8 @@ pub struct GraphSummary {
 pub struct GraphData {
     pub bars: Vec<Bar>,
     pub summary: GraphSummary,
+    /// Most-recent day's (tokens, cost) — for the tray tooltip.
+    pub today: (i64, f64),
 }
 
 /// Load usage from the shared core. Falls back to the demo grid + empty summary
@@ -155,13 +157,35 @@ pub fn load() -> GraphData {
                 graph::demo_grid(53, 7)
             });
             let summary = summary_from_payload(&payload);
-            GraphData { bars, summary }
+            let today = today_from_payload(&payload);
+            GraphData { bars, summary, today }
         }
         None => GraphData {
             bars: graph::demo_grid(53, 7),
             summary: GraphSummary::default(),
+            today: (0, 0.0),
         },
     }
+}
+
+/// (tokens, cost) of the most recent day in the contributions.
+fn today_from_payload(payload: &Value) -> (i64, f64) {
+    let Some(days) = payload.get("contributions").and_then(Value::as_array) else {
+        return (0, 0.0);
+    };
+    days.iter()
+        .max_by(|a, b| {
+            let da = a.get("date").and_then(Value::as_str).unwrap_or("");
+            let db = b.get("date").and_then(Value::as_str).unwrap_or("");
+            da.cmp(db)
+        })
+        .map(|d| {
+            let totals = d.get("totals");
+            let tokens = totals.and_then(|t| t.get("tokens")).and_then(Value::as_i64).unwrap_or(0);
+            let cost = totals.and_then(|t| t.get("cost")).and_then(Value::as_f64).unwrap_or(0.0);
+            (tokens, cost)
+        })
+        .unwrap_or((0, 0.0))
 }
 
 fn summary_from_payload(payload: &serde_json::Value) -> GraphSummary {
