@@ -66,7 +66,12 @@ fn main() -> glib::ExitCode {
     // Tray runs on its own thread and forwards clicks/menu actions to the UI.
     // Keep the handle alive for the whole process (dropping it removes the tray).
     let (cmd_tx, cmd_rx) = async_channel::unbounded::<tray::TrayCmd>();
-    let _tray = tray::spawn(cmd_tx);
+    // TOKENBAR_NO_TRAY=1 disables the tray (for isolating perf issues).
+    let _tray = if std::env::var_os("TOKENBAR_NO_TRAY").is_some() {
+        None
+    } else {
+        tray::spawn(cmd_tx)
+    };
 
     let app = Application::builder().application_id(APP_ID).build();
     app.connect_activate(move |app| build_ui(app, &cmd_rx));
