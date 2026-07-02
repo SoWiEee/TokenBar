@@ -17,27 +17,30 @@ use serde_json::Value;
 
 use crate::graph::{self, Bar};
 
-/// Disk cache for the computed usage-graph payload, keyed by the newest source
-/// mtime. Parsing ~1.5 GB of session logs takes tens of seconds; when nothing
-/// changed since the last run we reload the payload instead of re-parsing.
-fn cache_path() -> Option<PathBuf> {
-    Some(dirs::cache_dir()?.join("tokenbar-gtk").join("graph-cache.json"))
+// --- Disk cache, keyed by newest source mtime --------------------------------
+//
+// Each report re-parses ~1.5 GB of session logs (tens of seconds). We cache the
+// computed payload per report in ~/.cache/tokenbar-gtk, keyed by the newest
+// source mtime (a fast stat sweep): unchanged logs → reload instead of
+// re-parse. TOKENBAR_CACHE_STALE_OK=1 serves the cache regardless of freshness
+// (fast iteration / opening while an agent is actively writing logs, which
+// would otherwise bump the mtime key every few seconds).
+
+fn cache_path(name: &str) -> Option<PathBuf> {
+    Some(dirs::cache_dir()?.join("tokenbar-gtk").join(name))
 }
 
-/// The mtime token identifying the current state of all source logs. A fast
-/// stat sweep — orders of magnitude cheaper than parsing them.
 fn source_token() -> Option<u64> {
     tokscale_core::latest_source_mtime_ms(&tokscale_core::LocalParseOptions::default()).ok()
 }
 
-fn read_cache_file() -> Option<Value> {
-    let raw = std::fs::read_to_string(cache_path()?).ok()?;
+fn read_cache_file(name: &str) -> Option<Value> {
+    let raw = std::fs::read_to_string(cache_path(name)?).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
-/// Return the cached payload iff it was computed for the given `token`.
-fn read_cache(token: u64) -> Option<Value> {
-    let cached = read_cache_file()?;
+fn read_cache(name: &str, token: u64) -> Option<Value> {
+    let cached = read_cache_file(name)?;
     if cached.get("token")?.as_u64()? == token {
         cached.get("payload").cloned()
     } else {
@@ -45,14 +48,12 @@ fn read_cache(token: u64) -> Option<Value> {
     }
 }
 
-/// Return the cached payload regardless of freshness (stale-ok / offline mode).
-fn read_cache_any() -> Option<Value> {
-    read_cache_file()?.get("payload").cloned()
+fn read_cache_any(name: &str) -> Option<Value> {
+    read_cache_file(name)?.get("payload").cloned()
 }
 
-/// Persist the payload against `token` (best-effort; failures are non-fatal).
-fn write_cache(token: u64, payload: &Value) {
-    let Some(path) = cache_path() else { return };
+fn write_cache(name: &str, token: u64, payload: &Value) {
+    let Some(path) = cache_path(name) else { return };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -62,43 +63,51 @@ fn write_cache(token: u64, payload: &Value) {
     }
 }
 
-/// Load the usage-graph payload, using the disk cache when the source logs are
-/// unchanged since the last computation.
-fn load_payload() -> Option<Value> {
+/// Load a report payload through the disk cache: stale-ok short-circuit, then
+/// mtime-keyed hit, else run `compute`, cache, and return it. `label` is used
+/// only for the timing log line.
+fn cached_payload(
+    cache_file: &str,
+    label: &str,
+    compute: impl FnOnce() -> Result<Value, String>,
+) -> Option<Value> {
     let started = Instant::now();
 
-    // Stale-ok / offline: serve any cached payload without re-parsing. Useful
-    // for fast iteration and for opening the app while an agent is actively
-    // writing logs (which otherwise invalidates the mtime key every few
-    // seconds). Set TOKENBAR_CACHE_STALE_OK=1.
     if std::env::var_os("TOKENBAR_CACHE_STALE_OK").is_some() {
-        if let Some(payload) = read_cache_any() {
-            eprintln!("graph cache (stale-ok) in {:?}", started.elapsed());
+        if let Some(payload) = read_cache_any(cache_file) {
+            eprintln!("{label} cache (stale-ok) in {:?}", started.elapsed());
             return Some(payload);
         }
     }
 
     let token = source_token();
     if let Some(token) = token {
-        if let Some(payload) = read_cache(token) {
-            eprintln!("graph cache hit in {:?}", started.elapsed());
+        if let Some(payload) = read_cache(cache_file, token) {
+            eprintln!("{label} cache hit in {:?}", started.elapsed());
             return Some(payload);
         }
     }
 
-    match tb_reports::usage_graph::run("") {
+    match compute() {
         Ok(payload) => {
-            eprintln!("graph parsed in {:?}", started.elapsed());
+            eprintln!("{label} parsed in {:?}", started.elapsed());
             if let Some(token) = token {
-                write_cache(token, &payload);
+                write_cache(cache_file, token, &payload);
             }
             Some(payload)
         }
         Err(e) => {
-            eprintln!("usage_graph::run failed: {e}");
+            eprintln!("{label} failed: {e}");
             None
         }
     }
+}
+
+/// Raw per-model report payload (cached). Interpreted by the Models lens.
+pub fn load_models() -> Option<Value> {
+    cached_payload("models-cache.json", "models", || {
+        tb_reports::model_report::run("")
+    })
 }
 
 /// Headline totals for the Overview lens.
@@ -119,7 +128,10 @@ pub struct GraphData {
 /// Load usage from the shared core. Falls back to the demo grid + empty summary
 /// when there is no local data or the core call fails, so the UI is never blank.
 pub fn load() -> GraphData {
-    match load_payload() {
+    let payload = cached_payload("graph-cache.json", "graph", || {
+        tb_reports::usage_graph::run("")
+    });
+    match payload {
         Some(payload) => {
             let bars = bars_from_payload(&payload).unwrap_or_else(|| {
                 eprintln!("usage graph had no contributions; using demo grid");

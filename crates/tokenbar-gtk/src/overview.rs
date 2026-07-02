@@ -6,6 +6,7 @@ use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Label, Orientation};
 
 use crate::data::GraphSummary;
+use crate::format::group_thousands;
 
 pub struct Overview {
     root: GtkBox,
@@ -61,35 +62,3 @@ fn stat_tile(caption: &str) -> (GtkBox, Label) {
     (tile, value)
 }
 
-/// Format an integer with thousands separators (e.g. 1234567 -> "1,234,567").
-fn group_thousands(n: i64) -> String {
-    let neg = n < 0;
-    let digits = n.unsigned_abs().to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
-    let bytes = digits.as_bytes();
-    for (i, b) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(*b as char);
-    }
-    if neg {
-        format!("-{out}")
-    } else {
-        out
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::group_thousands;
-
-    #[test]
-    fn groups_thousands() {
-        assert_eq!(group_thousands(0), "0");
-        assert_eq!(group_thousands(42), "42");
-        assert_eq!(group_thousands(1234), "1,234");
-        assert_eq!(group_thousands(1234567), "1,234,567");
-        assert_eq!(group_thousands(-9876543), "-9,876,543");
-    }
-}
