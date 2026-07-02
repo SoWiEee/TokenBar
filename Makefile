@@ -1,9 +1,22 @@
 # Build order matters: the Rust staticlib must exist before swift build links.
 # Run everything from the repo root (the -L path in Package.swift is relative).
 
-.PHONY: all rust build run clean
+.PHONY: all rust build run clean linux linux-run deb
 
 all: build
+
+# --- Linux GTK frontend (crates/tokenbar-gtk) ---------------------------------
+# Needs system GTK4 dev libs: libgtk-4-dev libadwaita-1-dev libepoxy-dev.
+# On some NVIDIA/remote setups the app needs GDK_DEBUG=gl-glx to get a GL context.
+
+linux:
+	cargo build --release -p tokenbar-gtk
+
+linux-run:
+	GDK_DEBUG=gl-glx cargo run -p tokenbar-gtk
+
+deb:
+	cargo deb -p tokenbar-gtk
 
 rust:
 	cargo build --release

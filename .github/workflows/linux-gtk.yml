@@ -1,0 +1,42 @@
+name: Linux (GTK)
+
+# Builds and tests the Linux GTK4 frontend (crates/tokenbar-gtk) and packages a
+# .deb. The macOS Swift app has its own pipeline (ci.yml); this one is Rust-only.
+on:
+  push:
+    branches: [main]
+    paths: ['crates/**', 'vendor/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/linux-gtk.yml']
+  pull_request:
+    paths: ['crates/**', 'vendor/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/linux-gtk.yml']
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install GTK4 build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libepoxy-dev
+
+      - name: Build the GTK app
+        run: cargo build --release -p tokenbar-gtk
+
+      - name: Test (tb_reports + tokenbar-gtk)
+        run: cargo test -p tb_reports -p tokenbar-gtk
+
+      - name: Package .deb
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb -p tokenbar-gtk
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tokenbar-gtk-deb
+          path: target/debian/*.deb

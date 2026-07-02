@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=TokenBar
+GenericName=AI Usage Monitor
+Comment=Monitor AI-agent token usage and subscription quota from local session logs
+Exec=tokenbar-gtk
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;Monitor;GTK;
+Keywords=AI;tokens;usage;Claude;Codex;monitor;
+StartupNotify=false
