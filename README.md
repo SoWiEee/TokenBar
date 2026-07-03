@@ -63,6 +63,8 @@ lands.
 
 ## Install
 
+### macOS
+
 ```sh
 brew install --cask nanako0129/tokenbar/tokenbar
 ```
@@ -73,6 +75,44 @@ the cask clears the quarantine attribute on install, as disclosed. Requires an
 Apple Silicon Mac on macOS 14+ (Liquid Glass needs macOS 26; earlier systems get
 a vibrancy fallback). Still on macOS 11–13? The final Tauri build stays as
 [`tokenbar@legacy`](https://github.com/Nanako0129/TokenBar-Tauri).
+
+### Linux (Ubuntu 24.04+, GNOME)
+
+A **GTK4 + libadwaita** port shares the same Rust core as the Mac app — the
+orbitable 3D graph and all six lenses, in a tray-first window (flat design, no
+Liquid Glass). Build the `.deb` and install it — `apt install ./…` resolves the
+runtime dependencies for you:
+
+```sh
+sudo apt install libgtk-4-dev libadwaita-1-dev libepoxy-dev   # build deps
+cargo install cargo-deb                                       # once
+make deb
+sudo apt install ./target/debian/tokenbar-gtk_*.deb
+```
+
+> The `N: Download is performed unsandboxed…` line apt prints for a local file
+> is harmless — the package still installs. To run without installing at all:
+> `make linux-run`.
+
+`tokenbar-gtk` then lives in your tray. If your GNOME has no tray, install
+`gnome-shell-extension-appindicator` (an apt `Recommends` of the package).
+
+**Top-bar cost + quota popover** — an optional GNOME Shell extension that puts
+today's spend and remaining quota in the panel (the Linux counterpart of the Mac
+menu-bar title), with **Open TokenBar** to launch the full window:
+
+```sh
+make ext-install
+gnome-extensions enable tokenbar@nyanako.io
+```
+
+Then reload GNOME Shell so it loads the extension: **log out and back in**. (On a
+local X11 session `Alt`+`F2` → `r` → Enter also works, but avoid it over a remote
+desktop — a mid-restart crash can drop you into extensions-disabled safe mode.)
+
+> **X11 + NVIDIA:** the app auto-selects GLX at startup — GTK4's default EGL path
+> can fail to create a GL context on some NVIDIA/remote-X setups ("Unable to
+> create GL context"). No manual `GDK_DEBUG` is needed with current builds.
 
 ## How it works
 
