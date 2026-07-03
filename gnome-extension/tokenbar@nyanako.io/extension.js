@@ -85,7 +85,11 @@ class TokenBarButton extends PanelMenu.Button {
         this.menu.addMenuItem(refresh);
 
         const open = new PopupMenu.PopupMenuItem('Open TokenBar');
-        open.connect('activate', () => this._spawn(['tokenbar-gtk'], null, { TOKENBAR_NO_TRAY: '1' }));
+        // Force GLX: GTK4 defaults to EGL, which fails to create a GL context on
+        // this NVIDIA/X11 setup ("Unable to create GL context"). GLX is reliable
+        // here. The binary self-forces this too (force_glx_on_x11), but older
+        // installed builds predate that, so set it at the launch boundary.
+        open.connect('activate', () => this._spawn(['tokenbar-gtk'], null, { TOKENBAR_NO_TRAY: '1', GDK_DEBUG: 'gl-glx' }));
         this.menu.addMenuItem(open);
 
         // Refresh the cache view whenever the popover opens.
